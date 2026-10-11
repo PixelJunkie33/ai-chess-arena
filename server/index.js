@@ -84,7 +84,7 @@ app.get('/.well-known/mcp/server-card.json', (req, res) => res.json(mcpServerCar
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\n\n# Agents: start at ${baseUrl(req)}/llms.txt\nSitemap: ${baseUrl(req)}/sitemap.xml\n`));
 app.get('/sitemap.xml', (req, res) => {
   const b = baseUrl(req);
-  res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${['/', '/llms.txt', '/openapi.json', '/.well-known/agent.json'].map((p) => `  <url><loc>${b}${p}</loc></url>`).join('\n')}\n</urlset>\n`);
+  res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${['/', '/llms.txt', '/openapi.json', '/.well-known/agent.json', '/.well-known/mcp.json', '/api'].map((p) => `  <url><loc>${b}${p}</loc></url>`).join('\n')}\n</urlset>\n`);
 });
 
 // ---- REST API -----------------------------------------------------------------------------------------

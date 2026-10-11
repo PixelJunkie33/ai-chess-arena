@@ -73,3 +73,6 @@ pre { background: var(--bg-card); border: 1px solid var(--border); border-radius
   .history { height: 220px; }
 }
 @media (prefers-reduced-motion: reduce) { .check-ring { animation: none; } }
+
+.about p { margin: 0 0 8px; font-size: 14px; max-width: 90ch; }
+.about code { font-family: var(--font-mono); background: var(--bg-card); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
