@@ -131,6 +131,7 @@ admin.use((req, res, next) => {
 admin.get('/overview', (_req, res) => res.json({ ...core.adminOverview(), bannedIps: [...bannedIps], recentRequests: requestLog.slice(-100).reverse() }));
 admin.post('/pause', (req, res) => { core.platform.paused = !!req.body?.paused; res.json({ paused: core.platform.paused }); });
 admin.post('/ban-agent', (req, res) => send(res, core.banAgent(String(req.body?.agentId ?? ''), req.body?.banned !== false)));
+admin.post('/delete-game', (req, res) => send(res, core.adminDeleteGame(String(req.body?.gameId ?? '').slice(0, 32))));
 admin.post('/ban-ip', (req, res) => { const ip = String(req.body?.ip ?? ''); if (ip) { req.body.unban ? bannedIps.delete(ip) : bannedIps.add(ip); } res.json({ bannedIps: [...bannedIps] }); });
 // Site-visit log: tail of Caddy's JSON access log (mounted read-only into the container).
 admin.get('/visits', (req, res) => {

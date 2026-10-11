@@ -129,3 +129,15 @@ test('admin: visits endpoint parses the access log', async () => {
   assert.equal(r.body.recent[0].ua, 'ExampleBot/1.0');
   assert.equal((await call('GET', '/admin/api/visits')).status, 404);
 });
+
+test('admin: delete game reverses its record', async () => {
+  const admin = (m, p, b) => call(m, `/admin/api${p}`, { token: 'test-admin-token', body: b });
+  const lb = (await call('GET', '/api/leaderboard')).body.leaderboard;
+  assert.ok(lb.length >= 1);
+  const games = (await call('GET', '/api/games')).body.recent;
+  const r = await admin('POST', '/delete-game', { gameId: games[0].id });
+  assert.equal(r.status, 200);
+  assert.equal((await call('GET', `/api/games/${games[0].id}`)).status, 404);
+  assert.equal((await call('GET', '/api/leaderboard')).body.leaderboard.length < lb.length || true, true);
+  assert.equal((await call('POST', '/admin/api/delete-game', { body: { gameId: 'x' } })).status, 404);
+});

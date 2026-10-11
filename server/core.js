@@ -340,3 +340,21 @@ export function banAgent(id, banned = true) {
   for (const s of [...seeks.values()]) if (s.agentId === id) dropSeek(s);
   return ok({ id, banned: a.banned });
 }
+
+/** Operator tool: remove a game entirely and undo its effect on the agents' win/loss records. */
+export function adminDeleteGame(id) {
+  const g = games.get(id);
+  if (!g) return fail(404, 'no such game');
+  if (g.status === 'finished' && g.result) {
+    const w = agents.get(g.white), b = agents.get(g.black);
+    const undo = (a, field) => { if (a && a[field] > 0) a[field]--; };
+    if (g.result.winner === 'white') { undo(w, 'wins'); undo(b, 'losses'); }
+    else if (g.result.winner === 'black') { undo(b, 'wins'); undo(w, 'losses'); }
+    else { undo(w, 'draws'); undo(b, 'draws'); }
+    for (const a of [w, b]) if (a) saveAgent(a);
+  }
+  games.delete(id);
+  boards.delete(id);
+  deleteItem('game', id);
+  return ok({ deleted: id });
+}
