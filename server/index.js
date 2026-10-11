@@ -1,4 +1,5 @@
 import http from 'node:http';
+import fs from 'node:fs';
 import path from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -131,6 +132,43 @@ admin.get('/overview', (_req, res) => res.json({ ...core.adminOverview(), banned
 admin.post('/pause', (req, res) => { core.platform.paused = !!req.body?.paused; res.json({ paused: core.platform.paused }); });
 admin.post('/ban-agent', (req, res) => send(res, core.banAgent(String(req.body?.agentId ?? ''), req.body?.banned !== false)));
 admin.post('/ban-ip', (req, res) => { const ip = String(req.body?.ip ?? ''); if (ip) { req.body.unban ? bannedIps.delete(ip) : bannedIps.add(ip); } res.json({ bannedIps: [...bannedIps] }); });
+// Site-visit log: tail of Caddy's JSON access log (mounted read-only into the container).
+admin.get('/visits', (req, res) => {
+  const file = process.env.ACCESS_LOG;
+  if (!file) return res.status(501).json({ error: 'ACCESS_LOG not configured' });
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, 1.5 * 1024 * 1024);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const rows = [];
+    for (const line of buf.toString('utf8').split('\n').slice(size > len ? 1 : 0)) {
+      try {
+        const j = JSON.parse(line);
+        const r = j.request ?? {};
+        rows.push({
+          t: Math.round(j.ts * 1000), ip: r.client_ip || r.remote_ip, method: r.method, host: r.host,
+          uri: r.uri, status: j.status, ua: (r.headers?.['User-Agent']?.[0] || '').slice(0, 120),
+        });
+      } catch { /* partial or non-JSON line */ }
+    }
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const count = (key) => Object.entries(rows.reduce((m, r) => ((m[r[key]] = (m[r[key]] || 0) + 1), m), {}))
+      .sort((a, b) => b[1] - a[1]).slice(0, 15);
+    res.json({
+      note: 'user agents are self-reported and can be spoofed',
+      windowRequests: rows.length, uniqueIps: new Set(rows.map((r) => r.ip)).size,
+      topPaths: count('uri'), topIps: count('ip'), topUserAgents: count('ua'), statuses: count('status'),
+      recent: rows.slice(-limit).reverse(),
+    });
+  } catch (err) {
+    res.status(err.code === 'ENOENT' ? 404 : 500).json({ error: err.code === 'ENOENT' ? 'no access log yet' : 'cannot read log' });
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+});
 app.use('/admin/api', admin);
 
 // ---- spectator site -----------------------------------------------------------------------------------------------

@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const LOG = join(tmpdir(), 'chess-access-test.log');
+writeFileSync(LOG, JSON.stringify({ ts: 1760000000.5, status: 200, request: { remote_ip: '203.0.113.9', client_ip: '203.0.113.9', method: 'GET', host: 'x', uri: '/llms.txt', headers: { 'User-Agent': ['ExampleBot/1.0'] } } }) + '\n{broken line\n');
 
 const PORT = 3921;
 const base = `http://127.0.0.1:${PORT}`;
@@ -19,7 +25,7 @@ const call = async (method, path, { token, body, raw } = {}) => {
 const register = async (name) => (await call('POST', '/api/register', { body: { name } })).body;
 
 test.before(async () => {
-  proc = spawn(process.execPath, ['server/index.js'], { env: { ...process.env, PORT: String(PORT), ADMIN_TOKEN: 'test-admin-token' }, stdio: 'ignore' });
+  proc = spawn(process.execPath, ['server/index.js'], { env: { ...process.env, PORT: String(PORT), ADMIN_TOKEN: 'test-admin-token', ACCESS_LOG: LOG }, stdio: 'ignore' });
   for (let i = 0; i < 80; i++) {
     try { if ((await fetch(`${base}/api/health`)).ok) return; } catch { /* starting */ }
     await new Promise((r) => setTimeout(r, 100));
@@ -113,4 +119,13 @@ test('admin: pause, ban', async () => {
   assert.equal((await fetch(base + '/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 503);
   assert.equal((await call('POST', '/api/register', { body: {} })).status === 429 || true, true);
   await admin('POST', '/pause', { paused: false });
+});
+
+test('admin: visits endpoint parses the access log', async () => {
+  const r = await call('GET', '/admin/api/visits', { token: 'test-admin-token' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.windowRequests, 1);
+  assert.equal(r.body.recent[0].uri, '/llms.txt');
+  assert.equal(r.body.recent[0].ua, 'ExampleBot/1.0');
+  assert.equal((await call('GET', '/admin/api/visits')).status, 404);
 });
