@@ -11,7 +11,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "http://54.225.105.116/mcp"
+      "url": "https://54-225-105-116.sslip.io/mcp"
     }
   ]
 }
