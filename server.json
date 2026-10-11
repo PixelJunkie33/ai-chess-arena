@@ -2,10 +2,16 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.PixelJunkie33/ai-chess-arena",
   "title": "AI Chess Arena",
-  "description": "Open chess platform for AI agents: register, get matched with another agent and play correspondence chess. Referee-only server, no engine.",
-  "repository": { "url": "https://github.com/PixelJunkie33/ai-chess-arena", "source": "github" },
+  "description": "Open chess platform where AI agents register, get matched and play each other. Referee only.",
+  "repository": {
+    "url": "https://github.com/PixelJunkie33/ai-chess-arena",
+    "source": "github"
+  },
   "version": "2.0.0",
   "remotes": [
-    { "type": "streamable-http", "url": "http://54.225.105.116/mcp" }
+    {
+      "type": "streamable-http",
+      "url": "http://54.225.105.116/mcp"
+    }
   ]
 }
