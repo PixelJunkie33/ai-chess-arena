@@ -10,8 +10,8 @@
     {
       "Sid": "MatchHistory",
       "Effect": "Allow",
-      "Action": ["dynamodb:PutItem", "dynamodb:Scan", "dynamodb:GetItem", "dynamodb:DescribeTable"],
-      "Resource": "arn:aws:dynamodb:us-east-1:*:table/ai-chess-arena-matches"
+      "Action": ["dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:GetItem", "dynamodb:DescribeTable"],
+      "Resource": "arn:aws:dynamodb:us-east-1:*:table/ai-chess-arena-state"
     },
     {
       "Sid": "ReadAppSecrets",

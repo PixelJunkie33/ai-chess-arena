@@ -1,94 +1,147 @@
 import http from 'node:http';
 import path from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { Server } from 'socket.io';
-import { GameManager, MAIN_ROOM } from './gameManager.js';
-import { loadSecrets, initPersistence, getStats } from './persistence.js';
+import * as core from './core.js';
+import { llmsTxt, openapi, agentCard, mcpServerCard } from './discovery.js';
+import { mcpHandler } from './mcp.js';
+import { loadSecrets, initPersistence } from './persistence.js';
 
 await loadSecrets();
 initPersistence();
+await core.restore();
 
 const PORT = Number(process.env.PORT) || 3000;
 const CLIENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../client');
-const ROOM_ID = /^[\w-]{1,32}$/;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+const bannedIps = new Set();
+const requestLog = [];                       // ring buffer, newest last
+const LOG_MAX = 500;
 
-const app = express();
+export const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '4kb' }));
-app.use(express.static(CLIENT_DIR));
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY));
 
-const server = http.createServer(app);
-const io = new Server(server, { serveClient: true });
-const games = new GameManager(io);
+const baseUrl = (req) => process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
 
-// ---- REST -------------------------------------------------------------------
+// ---- security headers, logging, global gates ------------------------------------------------------
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
-
-app.post('/api/match/new', (_req, res) => {
-  const room = games.createRoom();
-  if (!room) return res.status(429).json({ error: 'too many rooms' });
-  res.status(201).json({ roomId: room.id });
-});
-
-app.get('/api/match/:id', (req, res) => {
-  const room = ROOM_ID.test(req.params.id) && games.getRoom(req.params.id);
-  if (!room) return res.status(404).json({ error: 'no such match' });
-  res.json(games.snapshot(room));
-});
-
-app.get('/api/stats', async (_req, res) => {
-  try { res.json(await getStats()); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ---- Socket.io ----------------------------------------------------------------
-
-// 30 spectator connections per second per IP (handshake level, applied to the engine).
-const joinLimiter = rateLimit({
-  windowMs: 1000, limit: 30, standardHeaders: true, legacyHeaders: false,
-  message: 'Too many spectators joining from this address',
-});
-io.engine.use(joinLimiter);
-
-io.on('connection', (socket) => {
-  const roomOf = () => games.getRoom(socket.data.roomId);
-
-  socket.on('joinRoom', (payload) => {
-    const id = payload?.roomId ?? MAIN_ROOM;
-    if (typeof id !== 'string' || !ROOM_ID.test(id)) return socket.emit('error', { message: 'bad roomId' });
-    const room = games.getRoom(id);
-    if (!room) return socket.emit('error', { message: 'no such room' });
-
-    if (socket.data.roomId) {                       // leaving a previous room
-      socket.leave(socket.data.roomId);
-      const prev = roomOf();
-      if (prev) games.setSpectators(prev, -1);
-    }
-    socket.data.roomId = id;
-    socket.join(id);
-    games.setSpectators(room, +1);
-    socket.emit('gameState', games.snapshot(room));   // late-join snapshot
-    if (room.status === 'idle') games.start(room);    // first spectator kicks off a match
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
   });
-
-  socket.on('startMatch', (p) => {
-    const room = roomOf();
-    if (!room) return;
-    games.start(room, p?.agentWhite, p?.agentBlack);
-  });
-  socket.on('pauseMatch', () => { const r = roomOf(); if (r) games.pause(r); });
-  socket.on('resetMatch', () => { const r = roomOf(); if (r) games.reset(r); });
-  socket.on('setSpeed', (p) => { const r = roomOf(); if (r) games.setSpeed(r, p?.speed); });
-
-  socket.on('disconnect', () => {
-    const room = roomOf();
-    if (room) games.setSpectators(room, -1);
-  });
+  next();
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`AI Chess Arena listening on http://0.0.0.0:${PORT}`));
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    if (!req.path.startsWith('/api') && !req.path.startsWith('/mcp') && !req.path.startsWith('/admin')) return;
+    requestLog.push({ t: Date.now(), ip: req.ip, method: req.method, path: req.path, status: res.statusCode, ua: (req.get('user-agent') || '').slice(0, 80) });
+    if (requestLog.length > LOG_MAX) requestLog.shift();
+  });
+  next();
+});
 
-for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { io.close(); server.close(() => process.exit(0)); });
+app.use((req, res, next) => (bannedIps.has(req.ip) ? res.status(403).json({ error: 'blocked' }) : next()));
+
+app.use(express.json({ limit: '2kb', type: 'application/json' }));
+app.use((err, _req, res, next) => {          // malformed / oversized JSON
+  if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'body too large' });
+  if (err instanceof SyntaxError || err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'invalid JSON' });
+  next(err);
+});
+
+const limiter = (windowMs, limit, message) => rateLimit({
+  windowMs, limit, standardHeaders: true, legacyHeaders: false,
+  message: { error: message },
+});
+const readLimit = limiter(60e3, 240, 'rate limit: too many requests, slow down');
+const writeLimit = limiter(60e3, 60, 'rate limit: too many write requests, slow down');
+const registerLimit = limiter(3600e3, 20, 'rate limit: too many registrations from this address this hour');
+
+const gate = (_req, res, next) => (core.platform.paused ? res.status(503).json({ error: 'platform temporarily paused by operator' }) : next());
+const requireAuth = (req, res, next) => {
+  const r = core.authenticate(req.get('authorization'));
+  if (r.error) return send(res, r.error);
+  req.agent = r.agent;
+  next();
+};
+const send = (res, { status, body }) => res.status(status).json(body);
+
+// ---- discovery ---------------------------------------------------------------------------------------
+
+app.get('/llms.txt', (req, res) => res.type('text/plain').send(llmsTxt(baseUrl(req))));
+app.get('/openapi.json', (req, res) => res.json(openapi(baseUrl(req))));
+app.get('/.well-known/agent.json', (req, res) => res.json(agentCard(baseUrl(req))));
+app.get('/.well-known/agent-card.json', (req, res) => res.json(agentCard(baseUrl(req))));
+app.get('/.well-known/mcp.json', (req, res) => res.json(mcpServerCard(baseUrl(req))));
+app.get('/.well-known/mcp/server-card.json', (req, res) => res.json(mcpServerCard(baseUrl(req))));
+app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\n\n# Agents: start at ${baseUrl(req)}/llms.txt\nSitemap: ${baseUrl(req)}/sitemap.xml\n`));
+app.get('/sitemap.xml', (req, res) => {
+  const b = baseUrl(req);
+  res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${['/', '/llms.txt', '/openapi.json', '/.well-known/agent.json'].map((p) => `  <url><loc>${b}${p}</loc></url>`).join('\n')}\n</urlset>\n`);
+});
+
+// ---- REST API -----------------------------------------------------------------------------------------
+
+const api = express.Router();
+api.use(readLimit);
+api.get('/', (req, res) => res.type('text/plain').send(llmsTxt(baseUrl(req))));
+api.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+api.post('/register', registerLimit, gate, (req, res) => send(res, core.register(req.body?.name)));
+api.get('/seeks', (_req, res) => send(res, core.listSeeks()));
+api.get('/games', (_req, res) => send(res, core.listGames()));
+api.get('/leaderboard', (_req, res) => send(res, core.leaderboard()));
+api.get('/stats', (_req, res) => send(res, core.stats()));
+api.get('/me', requireAuth, (req, res) => send(res, core.me(req.agent)));
+
+api.get('/games/:id', (req, res) => {
+  const a = req.get('authorization') ? core.authenticate(req.get('authorization')).agent : null;
+  send(res, core.getGame(req.params.id.slice(0, 32), a ?? null));
+});
+
+api.post('/play', writeLimit, gate, requireAuth, (req, res) => send(res, core.play(req.agent, req.body?.hoursPerMove)));
+api.post('/seek', writeLimit, gate, requireAuth, (req, res) => send(res, core.seek(req.agent, req.body?.hoursPerMove)));
+api.post('/seeks/:id/accept', writeLimit, gate, requireAuth, (req, res) => send(res, core.acceptSeek(req.agent, req.params.id.slice(0, 32))));
+api.post('/games/:id/move', writeLimit, gate, requireAuth, (req, res) => send(res, core.move(req.agent, req.params.id.slice(0, 32), req.body?.move)));
+api.post('/games/:id/resign', writeLimit, gate, requireAuth, (req, res) => send(res, core.resign(req.agent, req.params.id.slice(0, 32))));
+api.use((_req, res) => res.status(404).json({ error: 'not found; see /llms.txt' }));
+app.use('/api', api);
+
+app.get('/mcp', (_req, res) => res.status(405).set('Allow', 'POST').json({ error: 'POST JSON-RPC to /mcp' }));
+app.post('/mcp', readLimit, (req, res, next) => (core.platform.paused ? res.status(503).json({ error: 'paused' }) : next()), mcpHandler);
+
+// ---- operator admin (needs ADMIN_TOKEN from Secrets Manager) ----------------------------------------------------
+
+const admin = express.Router();
+admin.use(limiter(60e3, 60, 'rate limit'));
+admin.use((req, res, next) => {
+  const given = Buffer.from((req.get('authorization') || '').replace(/^Bearer /, ''));
+  const want = Buffer.from(ADMIN_TOKEN);
+  if (!ADMIN_TOKEN || given.length !== want.length || !timingSafeEqual(given, want)) return res.status(404).json({ error: 'not found' });
+  next();
+});
+admin.get('/overview', (_req, res) => res.json({ ...core.adminOverview(), bannedIps: [...bannedIps], recentRequests: requestLog.slice(-100).reverse() }));
+admin.post('/pause', (req, res) => { core.platform.paused = !!req.body?.paused; res.json({ paused: core.platform.paused }); });
+admin.post('/ban-agent', (req, res) => send(res, core.banAgent(String(req.body?.agentId ?? ''), req.body?.banned !== false)));
+admin.post('/ban-ip', (req, res) => { const ip = String(req.body?.ip ?? ''); if (ip) { req.body.unban ? bannedIps.delete(ip) : bannedIps.add(ip); } res.json({ bannedIps: [...bannedIps] }); });
+app.use('/admin/api', admin);
+
+// ---- spectator site -----------------------------------------------------------------------------------------------
+
+app.use(express.static(CLIENT_DIR, { maxAge: '5m' }));
+app.use((_req, res) => res.status(404).type('text/plain').send('Not found. Agents: see /llms.txt'));
+app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: 'internal error' }); });
+
+if (process.env.NODE_ENV !== 'test-import') {
+  const server = http.createServer(app);
+  setInterval(() => core.sweep(), 30e3).unref();
+  server.listen(PORT, '0.0.0.0', () => console.log(`AI Chess Arena listening on http://0.0.0.0:${PORT}`));
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => server.close(() => process.exit(0)));
+}
