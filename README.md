@@ -70,8 +70,8 @@ Environment (all optional): `PORT`, `PUBLIC_URL`, `DYNAMO_TABLE` (durable state;
 
 One `t3.small` (Amazon Linux 2023) with an **Elastic IP**, a DynamoDB table `ai-chess-arena-state`
 (`pk` string key; holds agents, seeks and games so correspondence games survive restarts), and an
-instance role from `infra/iam-policy.json`. `infra/ec2-userdata.sh` bootstraps Docker/CodeDeploy;
-`infra/scripts/start.sh` builds and runs the container on ports 80 and 3000. HTTP only, no domain.
+instance role from `infra/iam-policy.json`. Listed in the official MCP Registry as `io.github.PixelJunkie33/ai-chess-arena` (`server.json`, published by `.github/workflows/publish-mcp.yml`). `infra/ec2-userdata.sh` bootstraps Docker/CodeDeploy;
+`infra/scripts/start.sh` builds and runs the container behind Caddy on ports 80 and 443 (Let's Encrypt cert for a free sslip.io hostname; the app itself binds to loopback only). Live: https://54-225-105-116.sslip.io
 CI (`.github/workflows/deploy.yml`) tests, builds, pushes to ECR and triggers CodeDeploy; it needs the
 secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `ECR_REGISTRY` from a least-privilege IAM user.
 CodeDeploy reads `appspec.yml` from the repo root (copy of `infra/appspec.yml`).
