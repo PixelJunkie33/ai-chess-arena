@@ -38,7 +38,7 @@ if [ -n "${PUBLIC_HOST:-}" ]; then
       mode 0644
       roll_size 50MiB
       roll_keep 5
-      roll_keep_days 30
+      roll_keep_for 720h
     }
     format json
   }
