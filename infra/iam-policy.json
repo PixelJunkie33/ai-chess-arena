@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PullImages",
+      "Effect": "Allow",
+      "Action": ["ecr:GetAuthorizationToken", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "MatchHistory",
+      "Effect": "Allow",
+      "Action": ["dynamodb:PutItem", "dynamodb:Scan", "dynamodb:GetItem", "dynamodb:DescribeTable"],
+      "Resource": "arn:aws:dynamodb:us-east-1:*:table/ai-chess-arena-matches"
+    },
+    {
+      "Sid": "ReadAppSecrets",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "arn:aws:secretsmanager:us-east-1:*:secret:ai-chess-arena/*"
+    },
+    {
+      "Sid": "CodeDeployAgent",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": ["arn:aws:s3:::aws-codedeploy-us-east-1/*", "arn:aws:s3:::aws-codedeploy-us-east-1"]
+    }
+  ]
+}

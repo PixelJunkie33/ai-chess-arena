@@ -1,0 +1,46 @@
+name: Build and deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  build-and-deploy:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+      ECR_REPO: ai-chess-arena
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password | \
+          docker login --username AWS --password-stdin $ECR_REGISTRY
+      - name: Build and push
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPO:$GITHUB_SHA .
+          docker push $ECR_REGISTRY/$ECR_REPO:$GITHUB_SHA
+      - name: Deploy via CodeDeploy
+        run: |
+          aws deploy create-deployment \
+            --application-name ai-chess-arena \
+            --deployment-group-name production \
+            --github-location repository=$GITHUB_REPOSITORY,commitId=$GITHUB_SHA

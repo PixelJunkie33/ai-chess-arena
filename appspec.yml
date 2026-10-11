@@ -1,0 +1,15 @@
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /opt/ai-chess-arena
+hooks:
+  ApplicationStop:
+    - location: infra/scripts/stop.sh
+      timeout: 60
+  AfterInstall:
+    - location: infra/scripts/start.sh
+      timeout: 600
+  ValidateService:
+    - location: infra/scripts/validate.sh
+      timeout: 60
